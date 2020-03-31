@@ -21,10 +21,13 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+
+import java.util.function.Consumer;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -437,11 +440,7 @@ class HierarchicalTestExecutorTests {
 		MyLeaf child = spy(new MyLeaf(leafUniqueId));
 		MyLeaf dynamicTestDescriptor = spy(new MyLeaf(leafUniqueId.append("dynamic", "child")));
 
-		when(child.execute(any(), any())).thenAnswer(invocation -> {
-			DynamicTestExecutor dynamicTestExecutor = invocation.getArgument(1);
-			dynamicTestExecutor.execute(dynamicTestDescriptor);
-			return invocation.getArgument(0);
-		});
+		when(child.execute(any(), any())).thenAnswer(execute(dynamicTestDescriptor));
 		root.addChild(child);
 
 		InOrder inOrder = inOrder(listener, root, child, dynamicTestDescriptor);
@@ -477,8 +476,8 @@ class HierarchicalTestExecutorTests {
 		MyLeaf dynamicLeaf = spy(new MyLeaf(dynamicContainerAndTest.getUniqueId().append("test", "dynamicLeaf")));
 
 		root.addChild(child);
-		when(child.execute(any(), any())).thenAnswer(registerAndExecute(dynamicContainerAndTest));
-		when(dynamicContainerAndTest.execute(any(), any())).thenAnswer(registerAndExecute(dynamicLeaf));
+		when(child.execute(any(), any())).thenAnswer(execute(dynamicContainerAndTest));
+		when(dynamicContainerAndTest.execute(any(), any())).thenAnswer(execute(dynamicLeaf));
 		when(dynamicLeaf.execute(any(), any())).thenAnswer(invocation -> {
 			throw new AssertionError("test fails");
 		});
@@ -516,10 +515,49 @@ class HierarchicalTestExecutorTests {
 			FAILED, SUCCESSFUL, SUCCESSFUL);
 	}
 
-	private Answer<Object> registerAndExecute(TestDescriptor dynamicChild) {
+	@Test
+	void executesDynamicTestDescriptorsWithCustomListener() throws Exception {
+
+		UniqueId leafUniqueId = UniqueId.root("leaf", "child leaf");
+		MyLeaf child = spy(new MyLeaf(leafUniqueId));
+		MyLeaf dynamicTestDescriptor = spy(new MyLeaf(leafUniqueId.append("dynamic", "child")));
+		EngineExecutionListener anotherListener = mock(EngineExecutionListener.class);
+
+		when(child.execute(any(), any())).thenAnswer(
+			useDynamicTestExecutor(executor -> executor.execute(dynamicTestDescriptor, anotherListener)));
+		root.addChild(child);
+
+		InOrder inOrder = inOrder(listener, anotherListener, root, child, dynamicTestDescriptor);
+
+		executor.execute();
+
+		ArgumentCaptor<TestExecutionResult> aTestExecutionResult = ArgumentCaptor.forClass(TestExecutionResult.class);
+		inOrder.verify(listener).executionStarted(root);
+		inOrder.verify(child).prepare(rootContext);
+		inOrder.verify(child).shouldBeSkipped(rootContext);
+		inOrder.verify(listener).executionStarted(child);
+		inOrder.verify(child).execute(eq(rootContext), any());
+		inOrder.verify(anotherListener).dynamicTestRegistered(dynamicTestDescriptor);
+		inOrder.verify(dynamicTestDescriptor).prepare(rootContext);
+		inOrder.verify(dynamicTestDescriptor).shouldBeSkipped(rootContext);
+		inOrder.verify(anotherListener).executionStarted(dynamicTestDescriptor);
+		inOrder.verify(dynamicTestDescriptor).execute(eq(rootContext), any());
+		inOrder.verify(anotherListener).executionFinished(eq(dynamicTestDescriptor), aTestExecutionResult.capture());
+		inOrder.verify(listener).executionFinished(eq(child), aTestExecutionResult.capture());
+		inOrder.verify(listener).executionFinished(eq(root), any(TestExecutionResult.class));
+
+		assertThat(aTestExecutionResult.getAllValues()).extracting(TestExecutionResult::getStatus).containsExactly(
+			SUCCESSFUL, SUCCESSFUL);
+	}
+
+	private Answer<Object> execute(TestDescriptor dynamicChild) {
+		return useDynamicTestExecutor(executor -> executor.execute(dynamicChild));
+	}
+
+	private Answer<Object> useDynamicTestExecutor(Consumer<DynamicTestExecutor> action) {
 		return invocation -> {
 			DynamicTestExecutor dynamicTestExecutor = invocation.getArgument(1);
-			dynamicTestExecutor.execute(dynamicChild);
+			action.accept(dynamicTestExecutor);
 			return invocation.getArgument(0);
 		};
 	}
@@ -585,11 +623,7 @@ class HierarchicalTestExecutorTests {
 		when(dynamicTestDescriptor.getExclusiveResources()).thenReturn(
 			singleton(new ExclusiveResource("foo", LockMode.READ)));
 
-		when(child.execute(any(), any())).thenAnswer(invocation -> {
-			DynamicTestExecutor dynamicTestExecutor = invocation.getArgument(1);
-			dynamicTestExecutor.execute(dynamicTestDescriptor);
-			return invocation.getArgument(0);
-		});
+		when(child.execute(any(), any())).thenAnswer(execute(dynamicTestDescriptor));
 		root.addChild(child);
 
 		executor.execute();
